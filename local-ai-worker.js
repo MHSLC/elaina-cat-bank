@@ -1,4 +1,4 @@
-import { readLocalVerdict } from "./local-ai.js?v=2";
+import { readLocalVerdict } from "./local-ai.js?v=3";
 
 const runtimeUrl = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.86/lib/index.js";
 const runtimeIntegrity = "sha256-riZC5zpKmJbCHvs6BnxGZkRvi0nL4gEvS1dvXYPV8gY=";
@@ -6,13 +6,19 @@ const model = "Qwen3.5-2B-q4f32_1-MLC";
 const revision = "d835e5c41aa56174d915e8a3940cde599d3f5a30";
 const libraries = "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/5b7251f3bdce957be2a7bf73a6f6c560d9874df4/web-llm-models/v0_2_86/base/";
 
+function reportProgress(phase, detail = {}) {
+  self.postMessage({ type: "progress", report: { phase, ...detail } });
+}
+
 async function loadEngine() {
+  reportProgress("runtime");
   const response = await fetch(runtimeUrl, { integrity: runtimeIntegrity, credentials: "omit" });
   if (!response.ok) throw new Error("Runtime download failed");
   const moduleUrl = URL.createObjectURL(new Blob([await response.arrayBuffer()], { type: "text/javascript" }));
   try {
     const { CreateMLCEngine, prebuiltAppConfig } = await import(moduleUrl);
     const entry = prebuiltAppConfig.model_list.find(record => record.model_id === model);
+    reportProgress("prepare");
     return await CreateMLCEngine(model, {
       appConfig: {
         ...prebuiltAppConfig,
@@ -23,7 +29,12 @@ async function loadEngine() {
         }]
       },
       initProgressCallback(report) {
-        self.postMessage({ type: "progress", value: report.progress });
+        const loaded = /Loading model from cache\[(\d+)\/(\d+)\]/.exec(report.text);
+        const downloaded = /Fetching param cache\[\d+\/\d+\]: (\d+)MB fetched/.exec(report.text);
+        if (loaded) reportProgress("gpu", { done: Number(loaded[1]), total: Number(loaded[2]) });
+        else if (downloaded || report.text === "Start to fetch params") {
+          reportProgress("download", { progress: report.progress, mib: Number(downloaded?.[1] ?? 0) });
+        }
       }
     });
   } finally {
@@ -48,6 +59,7 @@ let engine;
 self.onmessage = async ({ data }) => {
   try {
     engine ??= await loadEngine();
+    reportProgress("review");
     const response = await engine.chat.completions.create({
       messages: [
         { role: "system", content: instructions },

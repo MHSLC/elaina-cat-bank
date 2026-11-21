@@ -16,7 +16,7 @@ export async function localReviewAvailability(device = globalThis.navigator, sec
   }
 }
 
-export function createLocalReviewer(newWorker = () => new Worker(new URL("./local-ai-worker.js?v=2", import.meta.url), { type: "module" })) {
+export function createLocalReviewer(newWorker = () => new Worker(new URL("./local-ai-worker.js?v=3", import.meta.url), { type: "module" })) {
   let worker;
   return (input, { signal, onProgress = () => {} } = {}) => new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -27,12 +27,26 @@ export function createLocalReviewer(newWorker = () => new Worker(new URL("./loca
     const active = worker;
     const stop = () => complete(signal.reason);
     const fail = () => complete(new Error("本机评审未能启动，可以改用 ChatGPT 评审。"));
+    let timer;
+    let lastUpdate;
+    function waitForUpdate(report = {}) {
+      const update = JSON.stringify(report);
+      if (update === lastUpdate) return;
+      lastUpdate = update;
+      clearTimeout(timer);
+      const message = report.phase === "review"
+        ? "本机模型评审超时，可以重试或切换到 ChatGPT 评审。"
+        : "本机模型长时间没有加载进展。可检查网络后重试，或切换到 ChatGPT 评审。";
+      timer = setTimeout(() => complete(new Error(message)), 5 * 60 * 1000);
+    }
     const receive = ({ data }) => {
-      if (data?.type === "progress") onProgress(data.value);
+      if (data?.type === "progress") {
+        waitForUpdate(data.report);
+        onProgress(data.report);
+      }
       if (data?.type === "error") complete(new Error(data.message));
       if (data?.type === "verdict") complete(null, data.verdict);
     };
-    const timer = setTimeout(() => complete(new Error("本机评审超时，可以重新尝试。")), 10 * 60 * 1000);
 
     function complete(error, verdict) {
       clearTimeout(timer);
@@ -51,6 +65,7 @@ export function createLocalReviewer(newWorker = () => new Worker(new URL("./loca
     active.addEventListener("message", receive);
     active.addEventListener("error", fail);
     signal?.addEventListener("abort", stop, { once: true });
+    waitForUpdate();
     try {
       active.postMessage(input);
     } catch (error) {

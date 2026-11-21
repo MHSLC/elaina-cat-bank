@@ -1,5 +1,5 @@
 import { chooseProblem, difficultyScales, earnedPoints, getScore, handoffPrompt, luoguDifficulty, matchingProblems, parseImportedReview } from "./logic.js";
-import { createLocalReviewer, localReviewAvailability } from "./local-ai.js?v=2";
+import { createLocalReviewer, localReviewAvailability } from "./local-ai.js?v=3";
 import renderMathInElement from "./auto-render.js";
 
 const $ = id => document.getElementById(id);
@@ -297,10 +297,14 @@ async function submitLocal() {
       submission: answer.value.trim()
     }, {
       signal: controller.signal,
-      onProgress(progress) {
-        if (Number.isFinite(progress)) showVerdict(progress >= 1
-          ? "模型已就绪，正在本机评审…"
-          : "正在准备本机模型 " + Math.round(Math.max(0, progress) * 100) + "%");
+      onProgress({ phase, progress, mib, done, total }) {
+        if (phase === "runtime") showVerdict("正在加载本机评审组件…");
+        else if (phase === "prepare") showVerdict("正在读取模型配置并初始化显卡…");
+        else if (phase === "download") {
+          const percent = (Math.min(1, Math.max(0, progress)) * 100).toFixed(1);
+          showVerdict(mib > 0 ? `正在准备模型文件 ${percent}%（已就绪 ${mib} MiB）` : "正在连接模型下载节点，等待首批分片完成…");
+        } else if (phase === "gpu") showVerdict(`正在把模型载入显卡（${done} / ${total} 个分片）…`);
+        else if (phase === "review") showVerdict("模型已就绪，正在本机评审…");
       }
     });
     if (verdict === "uncertain") throw new Error("本机模型无法确定，请用 ChatGPT 复核。");
