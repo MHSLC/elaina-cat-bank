@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="按难度抽一道算法题，提交解题思路，记录独立解题得分。">
-  <meta name="theme-color" content="#14142b">
+  <meta name="theme-color" content="#f8f6fb">
   <title>伊雷娜の猫猫题库</title>
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./katex.min.css">
-  <link rel="stylesheet" href="./style.css">
-  <script type="module" src="./app.js"></script>
+  <link rel="stylesheet" href="./style.css?v=2">
+  <script type="module" src="./app.js?v=2"></script>
 </head>
 <body>
   <header class="topbar">
@@ -56,7 +56,7 @@
                 <select id="max-rating" name="max" aria-label="最高难度"></select>
               </div>
             </fieldset>
-            <label class="detailed-filter"><input type="checkbox" id="detailed-only"> 仅抽有站内题面的题</label>
+            <label class="detailed-filter"><input type="checkbox" id="detailed-only" checked> 仅抽有题目大意的题</label>
             <p class="pool-count" id="pool-count" aria-live="polite">正在加载题库</p>
             <button type="submit" class="button primary wide" id="draw-button" disabled><span aria-hidden="true">✧</span> 抽一道题</button>
           </form>
@@ -88,12 +88,17 @@
             </div>
           </div>
           <div class="problem-body" id="problem-body" hidden>
+            <h3 class="statement-heading">题目大意</h3>
             <p id="statement" class="statement"></p>
-            <div class="problem-detail"><h3>数据范围</h3><p id="constraints"></p></div>
+            <div class="problem-detail" id="constraints-box"><h3>数据范围</h3><p id="constraints"></p></div>
             <details id="example-box"><summary>样例</summary><p id="example"></p></details>
           </div>
           <p id="empty-problem" class="muted">选定题库后，可以按该平台的难度抽题。</p>
-          <p id="linked-problem" class="muted" hidden>题意、数据范围和样例见原题。读完题后，可以在下方写口胡。</p>
+          <p id="linked-problem" class="muted" hidden>这道题的大意还未收录，可以查看原题，或把题面贴在这里。</p>
+          <details class="problem-context" id="problem-context" hidden>
+            <summary id="context-title">补充原题与数据范围</summary>
+            <textarea id="context-input" aria-labelledby="context-title" maxlength="6000" placeholder="粘贴原题题意和数据范围。内容保存在本浏览器。"></textarea>
+          </details>
         </section>
 
         <section class="card answer-card" aria-labelledby="answer-heading" id="answer-card">
@@ -101,11 +106,14 @@
             <h2 id="answer-heading"><span class="section-icon" aria-hidden="true">✎</span>你的口胡</h2>
             <select id="review-mode" aria-label="评审方式">
               <option value="chatgpt">ChatGPT 评审</option>
-              <option value="local" disabled>本机 Qwen（免费）</option>
+              <option value="local">本机 Qwen（免费）</option>
               <option value="server" hidden disabled>站内 OpenAI 评审</option>
             </select>
           </div>
-          <p class="muted mode-note" id="review-note" hidden></p>
+          <div class="review-tools">
+            <p class="muted mode-note" id="review-note" aria-live="polite" hidden></p>
+            <button type="button" id="retry-local" class="text-link" hidden>重新检测</button>
+          </div>
           <form id="answer-form">
             <div class="editor">
               <div class="editor-toolbar" aria-label="编辑器视图">

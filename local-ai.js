@@ -1,13 +1,22 @@
-export async function supportsLocalReview(device = globalThis.navigator, secure = globalThis.isSecureContext) {
-  if (!secure || typeof device?.gpu?.requestAdapter !== "function") return false;
+export async function localReviewAvailability(device = globalThis.navigator, secure = globalThis.isSecureContext) {
+  if (!secure) return "本机 Qwen 需要从 HTTPS 地址打开。";
+  if (typeof device?.gpu?.requestAdapter !== "function") return "当前浏览器没有 WebGPU。请用最新版 Edge 或 Chrome 直接打开网页。";
+  let timeout;
   try {
-    return Boolean(await device.gpu.requestAdapter());
+    const adapter = await Promise.race([
+      device.gpu.requestAdapter(),
+      new Promise(resolve => { timeout = setTimeout(resolve, 3500); })
+    ]);
+    if (adapter) return "";
+    return "浏览器没有找到可用的 WebGPU 显卡。请检查浏览器的图形加速，或改用 ChatGPT 评审。";
   } catch {
-    return false;
+    return "WebGPU 检测失败，请重试或改用 ChatGPT 评审。";
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
-export function createLocalReviewer(newWorker = () => new Worker(new URL("./local-ai-worker.js", import.meta.url), { type: "module" })) {
+export function createLocalReviewer(newWorker = () => new Worker(new URL("./local-ai-worker.js?v=2", import.meta.url), { type: "module" })) {
   let worker;
   return (input, { signal, onProgress = () => {} } = {}) => new Promise((resolve, reject) => {
     if (signal?.aborted) {

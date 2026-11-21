@@ -1,20 +1,21 @@
 import { chooseProblem, difficultyScales, earnedPoints, getScore, handoffPrompt, luoguDifficulty, matchingProblems, parseImportedReview } from "./logic.js";
-import { createLocalReviewer, supportsLocalReview } from "./local-ai.js";
+import { createLocalReviewer, localReviewAvailability } from "./local-ai.js?v=2";
 import renderMathInElement from "./auto-render.js";
 
 const $ = id => document.getElementById(id);
 const storageKey = "kouhu.arena.v1";
-const emptyState = () => ({ currentId: null, seen: [], drafts: {}, history: [], filters: null, ranges: {} });
+const emptyState = () => ({ currentId: null, seen: [], drafts: {}, contexts: {}, history: [], filters: null, ranges: {} });
 const format = new Intl.NumberFormat("zh-CN");
 const dateFormat = new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 const answer = $("answer");
+const contextInput = $("context-input");
 const dialog = $("review-dialog");
 const reviewMode = $("review-mode");
 const reviewLocal = createLocalReviewer();
 let state = emptyState();
 let problems = [];
 let autoJudge = false;
-let localReady;
+let localIssue;
 let localController;
 let activeReview;
 let busy = false;
@@ -132,25 +133,31 @@ function updateEditor() {
 }
 
 function showReviewMode() {
-  const localOption = reviewMode.querySelector('[value="local"]');
   const serverOption = reviewMode.querySelector('[value="server"]');
   const detailed = Boolean(current?.statement);
-  localOption.disabled = !localReady || !detailed;
   serverOption.hidden = !autoJudge;
   serverOption.disabled = !autoJudge || !detailed;
   const preferred = [...reviewMode.options].find(option => option.value === state.reviewMode && !option.disabled);
-  reviewMode.value = preferred?.value ?? (!localOption.disabled ? "local" : "chatgpt");
+  reviewMode.value = preferred?.value ?? (localIssue === "" && detailed ? "local" : "chatgpt");
   const note = $("review-note");
-  if (current && !detailed) {
-    note.textContent = "本题的 ChatGPT 评审会附上原题链接。";
-  } else if (reviewMode.value === "local") {
-    note.textContent = "在本机处理口胡。首次下载约 1.1 GB，之后可复用缓存。";
-  } else if (localReady === false && reviewMode.value === "chatgpt") {
-    note.textContent = "当前浏览器无法使用本机评审，可以交给 ChatGPT。";
+  const local = reviewMode.value === "local";
+  $("retry-local").hidden = !local || !localIssue;
+  if (local) {
+    note.textContent = localIssue === undefined ? "正在检测浏览器的 WebGPU…" : localIssue ||
+      (detailed || contextInput.value.trim()
+    ? "首次评审下载约 1.1 GB 的模型，口胡在本设备处理。"
+        : "请在题目卡片粘贴原题与数据范围，本机 Qwen 才能判断。");
   } else {
-    note.textContent = "";
+    note.textContent = current && !detailed && !contextInput.value.trim() ? "ChatGPT 评审会附上原题链接。" : "";
   }
   note.hidden = !note.textContent;
+}
+
+async function detectLocalReview() {
+  localIssue = undefined;
+  showReviewMode();
+  localIssue = await localReviewAvailability();
+  showReviewMode();
 }
 
 function draw() {
@@ -172,6 +179,9 @@ function renderProblem(problem) {
   $("empty-problem").hidden = Boolean(problem);
   $("problem-body").hidden = !detailed;
   $("linked-problem").hidden = !problem || detailed;
+  $("problem-context").hidden = !problem || Boolean(problem.constraints);
+  $("problem-context").open = false;
+  contextInput.value = problem ? state.contexts[problem.id] ?? "" : "";
   $("problem-link").hidden = !problem;
   $("mirror-link").hidden = !problem?.mirror;
   $("problem-rating").hidden = !problem;
@@ -191,7 +201,8 @@ function renderProblem(problem) {
     }
     if (detailed) {
       renderMath($("statement"), problem.statement);
-      renderMath($("constraints"), problem.constraints);
+      $("constraints-box").hidden = !problem.constraints;
+      renderMath($("constraints"), problem.constraints ?? "");
       renderMath($("example"), problem.example ?? "");
       $("example-box").hidden = !problem.example;
       $("example-box").open = false;
@@ -250,11 +261,16 @@ function viewHistory(show) {
 
 function showHandoff() {
   activeReview = { problemId: current.id, reviewId: crypto.randomUUID() };
-  $("review-prompt").value = handoffPrompt(current, answer.value.trim(), activeReview.reviewId);
+  $("review-prompt").value = handoffPrompt(reviewProblem(), answer.value.trim(), activeReview.reviewId);
   $("review-result").value = "";
   $("copy-review").textContent = "复制评审内容";
   $("import-status").textContent = "";
   dialog.showModal();
+}
+
+function reviewProblem() {
+  const pasted = contextInput.value.trim();
+  return { ...current, statement: current.statement || pasted, constraints: current.constraints || (current.statement && pasted) || undefined };
 }
 
 async function submitLocal() {
@@ -267,12 +283,16 @@ async function submitLocal() {
   showVerdict("正在加载本机模型…");
   updateEditor();
   try {
-    const response = await fetch("./rubrics.json", { signal: controller.signal });
-    if (!response.ok) throw new Error("未能加载评审资料，可以改用 ChatGPT 评审。");
-    const rubric = (await response.json())[current.id];
+    const task = reviewProblem();
+    let rubric;
+    if (current.statement) {
+      const response = await fetch("./rubrics.json?v=2", { signal: controller.signal });
+      if (!response.ok) throw new Error("未能加载评审资料，可以改用 ChatGPT 评审。");
+      rubric = (await response.json())[current.id];
+    }
     const verdict = await reviewLocal({
-      problem: current.statement,
-      constraints: current.constraints,
+      problem: task.statement,
+      constraints: task.constraints,
       reference: rubric,
       submission: answer.value.trim()
     }, {
@@ -317,6 +337,13 @@ $("practice-nav").addEventListener("click", () => viewHistory(false));
 $("history-nav").addEventListener("click", () => viewHistory(true));
 reviewMode.addEventListener("change", () => {
   state.reviewMode = reviewMode.value;
+  save();
+  showReviewMode();
+});
+$("retry-local").addEventListener("click", () => void detectLocalReview());
+contextInput.addEventListener("input", () => {
+  if (!current) return;
+  state.contexts[current.id] = contextInput.value;
   save();
   showReviewMode();
 });
@@ -374,7 +401,18 @@ $("import-form").addEventListener("submit", event => {
 $("answer-form").addEventListener("submit", async event => {
   event.preventDefault();
   if (!current || !answer.value.trim() || busy || answer.disabled) return;
-  if (reviewMode.value === "local" && localReady) {
+  if (reviewMode.value === "local") {
+    if (localIssue !== "") {
+      showVerdict(localIssue ?? "正在检测 WebGPU，请稍后再提交。");
+      $("manual-fallback").hidden = false;
+      return;
+    }
+    if (!reviewProblem().statement) {
+      $("problem-context").open = true;
+      contextInput.focus();
+      showVerdict("请先补充原题与数据范围。");
+      return;
+    }
     if (state.localDownloadApproved) void submitLocal();
     else $("local-dialog").showModal();
     return;
@@ -408,14 +446,14 @@ async function start() {
   if (state.filters) {
     const { platform, min, max, detailedOnly } = state.filters;
     if ([...$("platform").options].some(option => option.value === platform)) $("platform").value = platform;
-    $("detailed-only").checked = Boolean(detailedOnly);
+    $("detailed-only").checked = detailedOnly !== false;
     if (platform === "Codeforces" && Number.isInteger(min) && Number.isInteger(max) && !state.ranges.Codeforces) {
       state.ranges.Codeforces = [min, max];
     }
   }
   loadDifficultyRange();
   try {
-    const response = await fetch("./catalog.json");
+    const response = await fetch("./catalog.json?v=2");
     if (!response.ok) throw new Error("Catalog unavailable");
     const data = await response.json();
     problems = data.problems;
@@ -423,13 +461,10 @@ async function start() {
     for (const link of document.querySelectorAll('a[href="./source.zip"]')) link.hidden = !data.sourceDownload;
     $("owner-sign-in").hidden = !data.ownerSignIn;
     showReviewMode();
-    void supportsLocalReview().then(available => {
-      localReady = available;
-      showReviewMode();
-    });
+    void detectLocalReview();
     ready = true;
     const previous = problems.find(problem => problem.id === state.currentId);
-    if (previous) renderProblem(previous);
+    if (previous && (!$("detailed-only").checked || previous.statement || state.drafts[previous.id] || state.contexts[previous.id])) renderProblem(previous);
     else draw();
     showPool();
   } catch {
